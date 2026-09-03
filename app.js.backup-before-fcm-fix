@@ -21,14 +21,22 @@
         
             
 
-// FCM
+        // Analytics
+        import { getAnalytics }
+            from "https://www.gstatic.com/firebasejs/12.18.0/firebase-analytics.js";
+            // FCM
 import {
     getMessaging,
     getToken,
     onMessage
 } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-messaging.js";
 const messaging = getMessaging(app);
-
+            
+        // App Check
+import {
+    initializeAppCheck,
+    ReCaptchaEnterpriseProvider
+} from "https://www.gstatic.com/firebasejs/12.18.0/firebase-app-check.js";
 // Firebase AI Logic
 import {
     getAI,
@@ -49,56 +57,6 @@ const VAPID_KEY =
 // Store token until the user logs in
 let pendingFCMToken = null;
 
-function isLocalDevHost() {
-    const hostname = (location.hostname || "").toLowerCase();
-    return (
-        hostname === "localhost" ||
-        hostname === "127.0.0.1" ||
-        hostname === "::1" ||
-        hostname === "[::1]"
-    );
-}
-
-function canUseSecureBrowserFeatures() {
-    const protocol = (location.protocol || "").toLowerCase();
-    return protocol !== "file:" && (window.isSecureContext || isLocalDevHost());
-}
-
-function canRequestNotifications() {
-    return (
-        typeof Notification !== "undefined" &&
-        "serviceWorker" in navigator &&
-        canUseSecureBrowserFeatures()
-    );
-}
-
-async function registerMessagingServiceWorker() {
-    if (!("serviceWorker" in navigator)) {
-        return null;
-    }
-
-    const swUrl = new URL("./firebase-messaging-sw.js", window.location.href).toString();
-
-    try {
-        const registration = await navigator.serviceWorker.register(swUrl, { scope: "./" });
-        await navigator.serviceWorker.ready;
-        console.log("✅ Service worker registered for FCM:", registration.scope);
-        return registration;
-    } catch (error) {
-        const msg = (error && error.message) || String(error || "");
-        if (
-            msg.includes("Push API") ||
-            msg.includes("incognito") ||
-            msg.includes("permission denied") ||
-            msg.includes("Failed to execute 'subscribe'")
-        ) {
-            console.info("FCM is not supported in this browser session; push notifications are disabled.");
-            return null;
-        }
-        console.warn("FCM service worker registration failed:", error);
-        return null;
-    }
-}
 
 // Save FCM token to the currently logged-in user
 async function saveFCMToken(token) {
@@ -136,116 +94,69 @@ async function saveFCMToken(token) {
 
 
 // Request notification permission
-if (canRequestNotifications()) {
-    Notification.requestPermission().then(async (permission) => {
+Notification.requestPermission().then(async (permission) => {
 
-        if (permission !== "granted") {
+    if (permission !== "granted") {
+
+        console.log(
+            "🔕 Notification permission not granted."
+        );
+
+        return;
+    }
+
+    console.log(
+        "🔔 Notification permission granted!"
+    );
+
+    try {
+
+        const token = await getToken(
+            messaging,
+            {
+                vapidKey: VAPID_KEY
+            }
+        );
+
+        if (!token) {
 
             console.log(
-                "🔕 Notification permission not granted."
+                "⚠️ No FCM registration token available."
             );
 
             return;
         }
 
         console.log(
-            "🔔 Notification permission granted!"
+            "🔥 FCM Token generated."
         );
 
-        try {
-            const swRegistration = await registerMessagingServiceWorker();
+        // Check whether user is already logged in
+        if (auth.currentUser) {
 
-            if (!swRegistration) {
-                console.info("Skipping FCM token request because the service worker is not available.");
-                return;
-            }
+            await saveFCMToken(token);
 
-            const token = await getToken(
-                messaging,
-                {
-                    vapidKey: VAPID_KEY,
-                    serviceWorkerRegistration: swRegistration
-                }
-            );
+        } else {
 
-            if (!token) {
-
-                console.log(
-                    "⚠️ No FCM registration token available."
-                );
-
-                return;
-            }
+            // User hasn't logged in yet.
+            // Keep token temporarily.
+            pendingFCMToken = token;
 
             console.log(
-                "🔥 FCM Token generated."
+                "⏳ FCM token waiting for login..."
             );
-
-            // Check whether user is already logged in
-            if (auth.currentUser) {
-
-                await saveFCMToken(token);
-
-            } else {
-
-                // User hasn't logged in yet.
-                // Keep token temporarily.
-                pendingFCMToken = token;
-
-                console.log(
-                    "⏳ FCM token waiting for login..."
-                );
-            }
-
-        } catch (error) {
-            const msg = (error && error.message) || String(error || "");
-            const isUnsupportedBrowser =
-                msg.includes("permission denied") ||
-                msg.includes("Push API") ||
-                msg.includes("incognito") ||
-                msg.includes("subscribe") ||
-                msg.includes("Failed to execute 'subscribe'");
-
-            if (isUnsupportedBrowser) {
-                console.info(
-                    "FCM is unavailable in this browser context; continuing without push notifications."
-                );
-                return;
-            }
-
-            console.error(
-                "❌ Error getting FCM token:",
-                error
-            );
-
         }
 
-    }).catch((error) => {
-        const msg = (error && error.message) || String(error || "");
-        const isUnsupportedBrowser =
-            msg.includes("permission denied") ||
-            msg.includes("Push API") ||
-            msg.includes("incognito") ||
-            msg.includes("subscribe") ||
-            msg.includes("Failed to execute 'subscribe'");
+    } catch (error) {
 
-        if (isUnsupportedBrowser) {
-            console.info(
-                "FCM notification permission is unavailable in this browser session."
-            );
-            return;
-        }
-
-        console.warn(
-            "Notification permission request unavailable on this browser context:",
+        console.error(
+            "❌ Error getting FCM token:",
             error
         );
-    });
-} else if (location.protocol === "file:") {
-    console.info(
-        "Skipping FCM registration because this app is being served from a local file URL."
-    );
-}
+
+    }
+
+});
         // ================================
 // AUTHENTICATION
 // ================================
@@ -283,10 +194,6 @@ async function loginUser(role) {
             );
 
         const user = userCredential.user;
-
-        console.log("AUTH UID:", user.uid);
-        console.log("PATIENT_ID:", PATIENT_ID);
-        console.log("UID MATCH:", user.uid === PATIENT_ID);
 
         // Get user's role from Firestore
         const userDoc = await getDoc(
@@ -464,28 +371,30 @@ if (caregiverAreaButton) {
     });
 
 }
-        // Local/browser development guard: skip App Check and GA unless they are explicitly configured for a hosted production environment.
-        console.info("Skipping App Check and Analytics in local development mode.");
+        // Initialize App Check
+        initializeAppCheck(app, {
+            provider: new ReCaptchaEnterpriseProvider(
+                "6LcWg5stAAAAALngrRuWkZcle7fyTtMweFFZOOgM"
+            ),
+            isTokenAutoRefreshEnabled: true
+        });
+
+
+        // Analytics
+        getAnalytics(app);
+
 
         // Gemini
-        let model = null;
-        if (canUseSecureBrowserFeatures()) {
-            try {
-                const ai = getAI(app, {
-                    backend: new GoogleAIBackend()
-                });
+        const ai = getAI(app, {
+            backend: new GoogleAIBackend()
+        });
 
-                model = getGenerativeModel(ai, {
-                    model: "gemini-3.5-flash"
-                });
+        const model = getGenerativeModel(ai, {
+            model: "gemini-3.5-flash"
+        });
 
-                console.log("Cognitive Gaming Firebase + Gemini ready!");
-            } catch (error) {
-                console.warn("Gemini setup is unavailable in this browser context:", error);
-            }
-        } else {
-            console.info("Skipping Gemini AI setup because this app is running on a local file URL.");
-        }
+
+        console.log("Cognitive Gaming Firebase + Gemini ready!");
 
 
         // Gemini Assistant
@@ -506,11 +415,6 @@ if (caregiverAreaButton) {
                     return;
                 }
 
-                if (!model) {
-                    responseElement.textContent =
-                        "The AI assistant is not available in this browser session.";
-                    return;
-                }
 
                 responseElement.textContent =
                     "The assistant is thinking...";
@@ -560,17 +464,6 @@ document
 
         const remindersContent =
             document.getElementById("remindersContent");
-
-        if (!auth.currentUser) {
-            if (remindersContent) {
-                remindersContent.innerHTML =
-                    "<p>Please sign in to view reminders.</p>";
-            }
-            if (remindersSection) {
-                remindersSection.style.display = "block";
-            }
-            return;
-        }
 
         // Show Reminders page
         remindersSection.style.display = "block";
@@ -825,10 +718,6 @@ let lastReminderNotification = "";
 
 async function checkDueReminders() {
 
-    if (!auth.currentUser) {
-        return;
-    }
-
     try {
 
         const reminderQuery = query(
@@ -936,17 +825,6 @@ setInterval(() => {
 const progressContent =
     document.getElementById("progressContent");
 
-if (!auth.currentUser) {
-    if (progressContent) {
-        progressContent.textContent =
-            "Please sign in to view your progress.";
-    }
-    if (progressSection) {
-        progressSection.style.display = "block";
-    }
-    return;
-}
-
 if (!progressSection || !progressContent) {
     console.error(
         "Progress section elements not found."
@@ -971,15 +849,6 @@ const activityQuery = query(
 
 const snapshot = await getDocs(activityQuery);
 
-console.log("PATIENT_ID:", PATIENT_ID);
-console.log("Documents found:", snapshot.size);
-
-snapshot.forEach((doc) => {
-    console.log("ID:", doc.id);
-    console.log("DATA:", doc.data());
-});
-
-
             if (snapshot.empty) {
 
                 progressContent.textContent =
@@ -993,19 +862,12 @@ snapshot.forEach((doc) => {
 
             let html = "";
 
-            let memoryTotalScore = 0;
-            let memoryActivityCount = 0;
             snapshot.forEach((doc) => {
 
                 const data = doc.data();
 
                 totalScore += data.score || 0;
                 activityCount++;
-
-                if (data.activityType === "memory_sequence") {
-                    memoryTotalScore += Number(data.score || 0);
-                    memoryActivityCount++;
-                }
 
                 html += `
                     <div style="
@@ -1046,10 +908,6 @@ snapshot.forEach((doc) => {
             const averageScore =
                 Math.round(totalScore / activityCount);
 
-            const memoryAverageScore =
-                memoryActivityCount > 0
-                    ? Math.round(memoryTotalScore / memoryActivityCount)
-                    : 0;
             progressContent.innerHTML = `
                 <div style="
                     background: #eef3ff;
@@ -1065,15 +923,9 @@ snapshot.forEach((doc) => {
                     </p>
 
                     <p>
-                        Overall average score:
+                        Average score:
                         <strong>${averageScore}</strong>
                     </p>
-
-                    <p>
-                        Memory Sequence average:
-                        <strong>${memoryAverageScore}</strong>
-                    </p>
-
                 </div>
 
                 <h3>Recent Activities</h3>
@@ -1644,14 +1496,6 @@ function clearDashboardBanners() {
 async function loadCaregiverDashboard() {
     const c = getDashboardContainers();
 
-    if (!auth.currentUser) {
-        if (c.caregiverSection) c.caregiverSection.style.display = "block";
-        if (c.caregiverContent) {
-            c.caregiverContent.innerHTML = "<div class=\"dashboard-empty\">Please sign in to view the caregiver dashboard.</div>";
-        }
-        return;
-    }
-
     if (!c.caregiverSection || !c.caregiverContent) {
         console.error("Caregiver dashboard elements not found.");
         return;
@@ -1735,31 +1579,13 @@ const nextRound = document.getElementById("nextRound");
 const gameResult = document.getElementById("gameResult");
 const gameInstructions = document.getElementById("gameInstructions");
 
-activityBtn.addEventListener("click", () => {
-    if (!memoryGame) return;
-
-    memoryGame.style.display = "block";
-    memoryGame.scrollIntoView({ behavior: "smooth", block: "start" });
-    startRound();
-});
-
 let currentSequence = "";
 let currentLength = 3;
-let memoryRevealTimer = null;
-
-// Memory Sequence assessment metrics
-let roundStartedAt = null;
-let roundSubmitted = false;
-let currentRoundId = null;
 
 const MIN_DIFFICULTY = 2;
-const MAX_DIFFICULTY = 7;
+const MAX_DIFFICULTY = 6;
 
 async function updateDifficulty() {
-    if (!auth.currentUser) {
-        currentLength = MIN_DIFFICULTY;
-        return;
-    }
 
     try {
 
@@ -1770,14 +1596,6 @@ async function updateDifficulty() {
 
         const snapshot = await getDocs(activityQuery);
 
-        console.log("PATIENT_ID:", PATIENT_ID);
-        console.log("Documents found:", snapshot.size);
-
-        snapshot.forEach((doc) => {
-            console.log("Document ID:", doc.id);
-            console.log("Document data:", doc.data());
-        });
-
         const scores = [];
 
         snapshot.forEach((doc) => {
@@ -1785,19 +1603,11 @@ async function updateDifficulty() {
             const data = doc.data();
 
             if (data.activityType === "memory_sequence") {
-                scores.push(Number(data.score || 0));
+                scores.push(data.score || 0);
             }
-
         });
 
-        console.log("Memory Sequence scores:", scores);
-
         if (scores.length === 0) {
-
-            console.log(
-                "No memory_sequence results found."
-            );
-
             currentLength = MIN_DIFFICULTY;
             return;
         }
@@ -1810,9 +1620,6 @@ async function updateDifficulty() {
                 (sum, score) => sum + score,
                 0
             ) / recentScores.length;
-
-        console.log("Recent scores:", recentScores);
-        console.log("Average score:", averageScore);
 
         if (averageScore >= 80) {
 
@@ -1830,25 +1637,36 @@ async function updateDifficulty() {
         }
 
         console.log(
-            "Updated difficulty:",
-            currentLength
+            "Adaptive difficulty:",
+            currentLength,
+            "Average:",
+            averageScore
         );
 
     } catch (error) {
 
-        console.warn(
-            "Error updating difficulty; using default memory level:",
+        console.error(
+            "Adaptive difficulty error:",
             error
         );
-        currentLength = MIN_DIFFICULTY;
     }
 }
-async function startRound() {
-    if (memoryRevealTimer !== null) {
-        clearTimeout(memoryRevealTimer);
-        memoryRevealTimer = null;
-    }
 
+activityBtn.addEventListener("click", () => {
+
+    memoryGame.style.display = "block";
+
+    memoryGame.scrollIntoView({
+        behavior: "smooth"
+    });
+
+    startRound();
+});
+
+async function startRound() {
+
+    await updateDifficulty();
+    
     answerElement.value = "";
     gameResult.textContent = "";
 
@@ -1859,214 +1677,76 @@ async function startRound() {
         "Remember the numbers shown below.";
 
     currentSequence = "";
-    roundStartedAt = null;
-    roundSubmitted = false;
 
-    // Unique identifier for this game round
-    currentRoundId =
-        `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-    // Generate sequence according to adaptive difficulty
-    currentSequence = "";
     for (let i = 0; i < currentLength; i++) {
         currentSequence += Math.floor(Math.random() * 10);
     }
 
-    sequenceElement.dataset.sequence = currentSequence;
     sequenceElement.textContent = currentSequence;
 
-    // Hide the sequence after 3 seconds
-    memoryRevealTimer = setTimeout(() => {
+    setTimeout(() => {
 
-        sequenceElement.dataset.sequence = currentSequence;
         sequenceElement.textContent = "● ● ●";
 
         gameInstructions.textContent =
             "Now enter the numbers you remember.";
-
-        // Response-time measurement starts ONLY
-        // after the sequence disappears.
-        roundStartedAt = Date.now();
-        memoryRevealTimer = null;
 
     }, 3000);
 }
 
 checkAnswer.addEventListener("click", async () => {
 
-    // Prevent duplicate submissions
-    if (roundSubmitted) {
-        return;
-    }
-
-    const userAnswer = answerElement.value.replace(/\D/g, "").trim();
-    const expectedSequence = (sequenceElement.dataset.sequence || currentSequence || "").replace(/\D/g, "");
+    const userAnswer = answerElement.value.trim();
 
     if (!userAnswer) {
-
         gameResult.textContent =
             "Please enter your answer.";
-
         return;
     }
 
-    // Prevent answering before the sequence disappears
-    if (roundStartedAt === null) {
-
-        gameResult.textContent =
-            "Please wait until the sequence disappears.";
-
-        return;
-    }
-
-    roundSubmitted = true;
-
-    // ------------------------------------------------
-    // 1. Calculate response time
-    // ------------------------------------------------
-
-    const responseTimeMs =
-        Date.now() - roundStartedAt;
-
-    const responseTimeSeconds =
-        Number((responseTimeMs / 1000).toFixed(2));
-
-
-    // ------------------------------------------------
-    // 2. Calculate digit-level accuracy
-    // ------------------------------------------------
-
-    let correctPositions = 0;
-
-    const comparisonLength =
-        Math.min(
-            userAnswer.length,
-            expectedSequence.length
-        );
-
-    for (let i = 0; i < comparisonLength; i++) {
-
-        if (userAnswer[i] === expectedSequence[i]) {
-            correctPositions++;
-        }
-    }
-
-
-    // ------------------------------------------------
-    // 3. Calculate accuracy
-    // ------------------------------------------------
-
-    const accuracy =
-        Math.round(
-            (correctPositions / expectedSequence.length) * 100
-        );
-
-
-    // ------------------------------------------------
-    // 4. Calculate standardized score
-    // ------------------------------------------------
-
-    // Correct recall = 100
-    // Partial recall receives a proportional score.
-    const score = accuracy;
-
-
-    // ------------------------------------------------
-    // 5. Result status
-    // ------------------------------------------------
-
-    const correct =
-        userAnswer === expectedSequence;
-
+    const correct = userAnswer === currentSequence;
+    const score = correct ? 100 : 0;
 
     if (correct) {
 
-        currentLength = Math.min(
-            currentLength + 1,
-            MAX_DIFFICULTY
-        );
-
         gameResult.textContent =
-            `✅ Excellent! You remembered correctly. ` +
-            `Score: ${score}/100 | ` +
-            `Accuracy: ${accuracy}% | ` +
-            `Time: ${responseTimeSeconds}s | ` +
-            `Next round: ${currentLength} digits`;
+            "✅ Excellent! You remembered correctly.";
 
     } else {
 
         gameResult.textContent =
-            `That's okay. ` +
-            `Score: ${score}/100 | ` +
-            `Accuracy: ${accuracy}% | ` +
-            `Time: ${responseTimeSeconds}s`;
+            "That's okay. Let's try again.";
     }
 
-
-    // ------------------------------------------------
-    // 6. Save standardized result to Firestore
-    // ------------------------------------------------
-
+    // Save the result to Firestore
     try {
 
-        const resultData = {
+        await addDoc(collection(db, "activityResults"), {
 
-            // Patient identification
-            patientId: PATIENT_ID,
+            patientId: PATIENT_ID ,
 
-            // Standard activity identification
             activityType: "memory_sequence",
 
-            // Unique game round
-            roundId: currentRoundId,
-
-            // Assessment result
             score: score,
-            accuracy: accuracy,
 
-            // Difficulty information
             difficulty: currentLength,
-            sequenceLength: expectedSequence.length,
 
-            // Performance information
-            correct: correct,
-            correctPositions: correctPositions,
-            responseTimeMs: responseTimeMs,
-            responseTimeSeconds: responseTimeSeconds,
-
-            // Number of submissions for this round
             attempts: 1,
 
-            // Timestamps
-            timestamp: serverTimestamp(),
-            clientTimestamp: Date.now()
-        };
+            timestamp: serverTimestamp()
 
+        });
 
-        await addDoc(
-            collection(db, "activityResults"),
-            resultData
-        );
-
-
-        console.log(
-            "✅ Memory Sequence result saved:",
-            resultData
-        );
+        console.log("✅ Activity result saved to Firestore!");
 
     } catch (error) {
 
         console.error(
-            "❌ Could not save Memory Sequence result:",
+            "❌ Could not save activity result:",
             error
         );
 
     }
-
-
-    // ------------------------------------------------
-    // 7. Update UI
-    // ------------------------------------------------
 
     checkAnswer.style.display = "none";
     nextRound.style.display = "inline-block";
@@ -2234,15 +1914,10 @@ let currentRoutine = [];
 let routineCurrentStep = 0;
 let routineScore = 0;
 let currentRoutineTime = null;
-let routineRevealTimer = null;
 
 
 // Start a new round
 function startRoutineRound(timeOfDay) {
-    if (routineRevealTimer !== null) {
-        clearTimeout(routineRevealTimer);
-        routineRevealTimer = null;
-    }
 
     routineCurrentStep = 0;
     routineScore = 0;
@@ -2262,7 +1937,7 @@ function startRoutineRound(timeOfDay) {
 
     routineOptions.innerHTML = "";
 
-    routineRevealTimer = setTimeout(() => {
+    setTimeout(() => {
 
         routineSequence.textContent =
             "● ● ● ●";
@@ -2271,7 +1946,6 @@ function startRoutineRound(timeOfDay) {
             "Tap the activities in the order you remember.";
 
         showRoutineOptions();
-        routineRevealTimer = null;
 
     }, 10000);
 }
@@ -2510,7 +2184,6 @@ const nextPatternRound =
     document.getElementById("nextPatternRound");
 
 let correctPattern = "";
-let patternRevealTimer = null;
 
 const patterns = [
     "🔵 ⭐ 🔵 ⭐",
@@ -2522,10 +2195,6 @@ const patterns = [
 
 // Start a pattern round
 function startPatternRound() {
-    if (patternRevealTimer !== null) {
-        clearTimeout(patternRevealTimer);
-        patternRevealTimer = null;
-    }
 
     patternResult.textContent = "";
 
@@ -2544,7 +2213,7 @@ function startPatternRound() {
 
     patternOptions.innerHTML = "";
 
-    patternRevealTimer = setTimeout(() => {
+    setTimeout(() => {
 
         patternDisplay.textContent =
             "● ● ● ●";
@@ -2553,7 +2222,6 @@ function startPatternRound() {
             "Tap the pattern you remember.";
 
         showPatternOptions();
-        patternRevealTimer = null;
 
     }, 7500);
 }
